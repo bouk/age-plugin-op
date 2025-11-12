@@ -1,0 +1,153 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+
+	"filippo.io/age"
+	"filippo.io/age/agessh"
+)
+
+// Recipient represents an age-plugin-op recipient.
+type Recipient struct {
+	data string
+}
+
+// NewRecipient creates a new Recipient from decoded recipient data.
+func NewRecipient(data []byte) (age.Recipient, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("recipient data is empty")
+	}
+	return &Recipient{
+		data: string(data),
+	}, nil
+}
+
+// Wrap encrypts the file key to this recipient.
+func (r *Recipient) Wrap(fileKey []byte) ([]*age.Stanza, error) {
+	// TODO: Implement encryption logic
+	return nil, errors.New("encryption not implemented yet")
+}
+
+// WrapWithLabels encrypts the file key to this recipient with labels.
+func (r *Recipient) WrapWithLabels(fileKey []byte) (labels []string, stanzas []*age.Stanza, err error) {
+	// TODO: Implement encryption logic with labels
+	return nil, nil, errors.New("encryption with labels not implemented yet")
+}
+
+// Identity represents an age-plugin-op identity.
+type Identity struct {
+}
+
+// NewIdentity creates a new Identity from decoded identity data.
+func NewIdentity(data []byte) (age.Identity, error) {
+	return &Identity{}, nil
+}
+
+// Unwrap decrypts a file key from one of the provided stanzas.
+func (i *Identity) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
+	ctx := context.Background()
+
+	keyIDs, err := listOPSSHKeyIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list SSH keys from 1Password: %w", err)
+	}
+
+	var joinedErr error
+	for _, keyID := range keyIDs {
+		privateKey, err := fetchOPSSHPrivateKey(ctx, keyID)
+		if err != nil {
+			joinedErr = errors.Join(joinedErr, fmt.Errorf("failed to fetch key %s: %w", keyID, err))
+			continue
+		}
+
+		identity, err := agessh.ParseIdentity([]byte(privateKey))
+		if err != nil {
+			joinedErr = errors.Join(joinedErr, fmt.Errorf("failed to parse key %s: %w", keyID, err))
+			continue
+		}
+
+		fileKey, err := identity.Unwrap(stanzas)
+		if errors.Is(err, age.ErrIncorrectIdentity) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt with key %s: %w", keyID, err)
+		}
+		return fileKey, nil
+	}
+
+	if joinedErr != nil {
+		return nil, joinedErr
+	}
+
+	return nil, age.ErrIncorrectIdentity
+}
+
+// Recipient returns the corresponding recipient for this identity.
+func (i *Identity) Recipient() (age.Recipient, error) {
+	return &Recipient{}, nil
+}
+
+type opItemSummary struct {
+	ID string `json:"id"`
+}
+
+type opField struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+func listOPSSHKeyIDs(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "op", "item", "list", "--categories", "SSH Key", "--format=json")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("op item list: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	var summaries []opItemSummary
+	if err := json.Unmarshal(stdout.Bytes(), &summaries); err != nil {
+		return nil, fmt.Errorf("decode op item list: %w", err)
+	}
+
+	ids := make([]string, 0, len(summaries))
+	for _, item := range summaries {
+		if item.ID != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids, nil
+}
+
+func fetchOPSSHPrivateKey(ctx context.Context, id string) (string, error) {
+	cmd := exec.CommandContext(ctx, "op", "item", "get", id, "--format=json", "--fields", "type=SSHKEY")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("op item get: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	var field opField
+	if err := json.Unmarshal(stdout.Bytes(), &field); err != nil {
+		return "", fmt.Errorf("decode op item: %w", err)
+	}
+
+	privateKey := strings.TrimSpace(field.Value)
+	if privateKey != "" {
+		return privateKey, nil
+	}
+
+	return "", fmt.Errorf("private key not found in item %s", id)
+}
