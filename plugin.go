@@ -53,33 +53,46 @@ func NewIdentity(data []byte) (age.Identity, error) {
 func (i *Identity) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
 	ctx := context.Background()
 
-	keyIDs, err := listOPSSHKeyIDs(ctx)
+	allKeys, err := listOPSSHKeys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list SSH keys from 1Password: %w", err)
 	}
 
 	var joinedErr error
-	for _, keyID := range keyIDs {
-		privateKey, err := fetchOPSSHPrivateKey(ctx, keyID)
-		if err != nil {
-			joinedErr = errors.Join(joinedErr, fmt.Errorf("failed to fetch key %s: %w", keyID, err))
+	for _, stanza := range stanzas {
+		if len(stanza.Args) == 0 {
 			continue
 		}
 
-		identity, err := agessh.ParseIdentity([]byte(privateKey))
-		if err != nil {
-			joinedErr = errors.Join(joinedErr, fmt.Errorf("failed to parse key %s: %w", keyID, err))
-			continue
-		}
+		fingerprintPrefix := stanza.Args[0]
+		expectedPrefix := "SHA256:" + fingerprintPrefix
 
-		fileKey, err := identity.Unwrap(stanzas)
-		if errors.Is(err, age.ErrIncorrectIdentity) {
-			continue
+		for _, key := range allKeys {
+			if !strings.HasPrefix(key.AdditionalInformation, expectedPrefix) {
+				continue
+			}
+
+			privateKey, err := fetchOPSSHPrivateKey(ctx, key.ID)
+			if err != nil {
+				joinedErr = errors.Join(joinedErr, fmt.Errorf("failed to fetch key %s: %w", key.ID, err))
+				continue
+			}
+
+			identity, err := agessh.ParseIdentity([]byte(privateKey))
+			if err != nil {
+				joinedErr = errors.Join(joinedErr, fmt.Errorf("failed to parse key %s: %w", key.ID, err))
+				continue
+			}
+
+			fileKey, err := identity.Unwrap(stanzas)
+			if errors.Is(err, age.ErrIncorrectIdentity) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to decrypt with key %s: %w", key.ID, err)
+			}
+			return fileKey, nil
 		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt with key %s: %w", keyID, err)
-		}
-		return fileKey, nil
 	}
 
 	if joinedErr != nil {
@@ -95,7 +108,8 @@ func (i *Identity) Recipient() (age.Recipient, error) {
 }
 
 type opItemSummary struct {
-	ID string `json:"id"`
+	ID                   string `json:"id"`
+	AdditionalInformation string `json:"additional_information"`
 }
 
 type opField struct {
@@ -105,7 +119,7 @@ type opField struct {
 	Value string `json:"value"`
 }
 
-func listOPSSHKeyIDs(ctx context.Context) ([]string, error) {
+func listOPSSHKeys(ctx context.Context) ([]opItemSummary, error) {
 	cmd := exec.CommandContext(ctx, "op", "item", "list", "--categories", "SSH Key", "--format=json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -120,13 +134,14 @@ func listOPSSHKeyIDs(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("decode op item list: %w", err)
 	}
 
-	ids := make([]string, 0, len(summaries))
+	keys := make([]opItemSummary, 0, len(summaries))
 	for _, item := range summaries {
 		if item.ID != "" {
-			ids = append(ids, item.ID)
+			keys = append(keys, item)
 		}
 	}
-	return ids, nil
+
+	return keys, nil
 }
 
 func fetchOPSSHPrivateKey(ctx context.Context, id string) (string, error) {
