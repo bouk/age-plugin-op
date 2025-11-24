@@ -13,33 +13,6 @@ import (
 	"filippo.io/age/agessh"
 )
 
-// Recipient represents an age-plugin-op recipient.
-type Recipient struct {
-	data string
-}
-
-// NewRecipient creates a new Recipient from decoded recipient data.
-func NewRecipient(data []byte) (age.Recipient, error) {
-	if len(data) == 0 {
-		return nil, fmt.Errorf("recipient data is empty")
-	}
-	return &Recipient{
-		data: string(data),
-	}, nil
-}
-
-// Wrap encrypts the file key to this recipient.
-func (r *Recipient) Wrap(fileKey []byte) ([]*age.Stanza, error) {
-	// TODO: Implement encryption logic
-	return nil, errors.New("encryption not implemented yet")
-}
-
-// WrapWithLabels encrypts the file key to this recipient with labels.
-func (r *Recipient) WrapWithLabels(fileKey []byte) (labels []string, stanzas []*age.Stanza, err error) {
-	// TODO: Implement encryption logic with labels
-	return nil, nil, errors.New("encryption with labels not implemented yet")
-}
-
 // Identity represents an age-plugin-op identity.
 type Identity struct {
 }
@@ -102,13 +75,8 @@ func (i *Identity) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
 	return nil, age.ErrIncorrectIdentity
 }
 
-// Recipient returns the corresponding recipient for this identity.
-func (i *Identity) Recipient() (age.Recipient, error) {
-	return &Recipient{}, nil
-}
-
 type opItemSummary struct {
-	ID                   string `json:"id"`
+	ID                    string `json:"id"`
 	AdditionalInformation string `json:"additional_information"`
 }
 

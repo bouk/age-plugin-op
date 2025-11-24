@@ -19,7 +19,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	p.HandleRecipient(NewRecipient)
 	p.HandleIdentity(NewIdentity)
 
 	os.Exit(p.Main())
